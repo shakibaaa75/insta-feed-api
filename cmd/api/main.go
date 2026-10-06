@@ -27,6 +27,14 @@ func main() {
 		log.Fatal("set API_KEY so the API is not open to everyone")
 	}
 
+	log.Printf("config: PUBLIC_URL=%q profile=%q db=%q addr=%q",
+		cfg.PublicURL, cfg.Profile, cfg.DB, cfg.Addr)
+	if cfg.PublicURL == "" {
+		log.Printf("WARNING: PUBLIC_URL is empty — stored images will not be " +
+			"served from your own domain, and /posts will keep returning " +
+			"Instagram CDN links that expire and 403.")
+	}
+
 	ctx, cancel := context.WithTimeout(
 		context.Background(),
 		20*time.Second,
@@ -76,6 +84,12 @@ func main() {
 
 	// ------------------------------------------------------------
 	// GET /posts?profile=name&limit=50
+	//
+	// FIX: imageUrl is rewritten at read time. Any post whose image
+	// is present in GridFS is served from PUBLIC_URL/img/<shortcode>,
+	// regardless of what string is stored in MongoDB. This is what
+	// stops Instagram's expiring CDN links from leaking out to
+	// WordPress and causing 403s.
 	// ------------------------------------------------------------
 
 	mux.HandleFunc(
@@ -100,6 +114,9 @@ func main() {
 				profile = cfg.Profile
 			}
 
+			log.Printf("[posts] request profile=%q limit=%d publicURL=%q",
+				profile, limit, cfg.PublicURL)
+
 			posts, err := st.List(
 				r.Context(),
 				profile,
@@ -107,6 +124,7 @@ func main() {
 			)
 
 			if err != nil {
+				log.Printf("[posts] db error: %v", err)
 				writeJSON(
 					w,
 					http.StatusInternalServerError,
@@ -116,6 +134,29 @@ func main() {
 				)
 				return
 			}
+
+			// ---- READ-TIME URL REWRITE ----
+			rewritten := 0
+			for i := range posts {
+				stored := posts[i].ImageURL
+				if st.HasImage(r.Context(), posts[i].Shortcode) {
+					if cfg.PublicURL != "" {
+						posts[i].ImageURL = cfg.PublicURL + "/img/" + posts[i].Shortcode
+						rewritten++
+						log.Printf("[posts]   %s: has image, imageUrl %q -> %q",
+							posts[i].Shortcode, shorten(stored), posts[i].ImageURL)
+					} else {
+						log.Printf("[posts]   %s: has image but PUBLIC_URL is empty — "+
+							"leaving imageUrl as %q (will 403 when it expires)",
+							posts[i].Shortcode, shorten(stored))
+					}
+				} else {
+					log.Printf("[posts]   %s: no stored image, leaving imageUrl as %q",
+						posts[i].Shortcode, shorten(stored))
+				}
+			}
+			log.Printf("[posts] returning %d posts (%d rewritten to %s/img/...)",
+				len(posts), rewritten, cfg.PublicURL)
 
 			writeJSON(
 				w,
@@ -196,6 +237,7 @@ func main() {
 			if err := json.NewDecoder(
 				r.Body,
 			).Decode(&body); err != nil {
+				log.Printf("[ingest] bad JSON: %v", err)
 				writeJSON(
 					w,
 					http.StatusBadRequest,
@@ -224,6 +266,9 @@ func main() {
 				)
 				return
 			}
+
+			log.Printf("[ingest] start profile=%q posts=%d links=%d err=%q",
+				profile, len(body.Posts), len(body.Links), body.Error)
 
 			// Extension reports an error.
 			if body.Error != "" {
@@ -277,6 +322,8 @@ func main() {
 					}
 
 					if shortcode == "" {
+						log.Printf("[ingest]   skip post with no shortcode (url=%q)",
+							shorten(p.URL))
 						continue
 					}
 
@@ -307,7 +354,9 @@ func main() {
 					)
 				}
 
-				// ---- NEW: try to download images on the server ----
+				log.Printf("[ingest] prepared %d posts, calling prepareImages (publicURL=%q)",
+					len(posts), cfg.PublicURL)
+
 				// For posts we already have, this just fixes the URL.
 				// For new posts, Instagram will likely return 403
 				// (their CDN blocks server-side requests), so the
@@ -333,6 +382,7 @@ func main() {
 				)
 
 				if err != nil {
+					log.Printf("[ingest] db error: %v", err)
 					writeJSON(
 						w,
 						http.StatusInternalServerError,
@@ -342,6 +392,8 @@ func main() {
 					)
 					return
 				}
+
+				log.Printf("[ingest] done found=%d added=%d", len(posts), added)
 
 				writeJSON(
 					w,
@@ -402,6 +454,7 @@ func main() {
 			)
 
 			if err != nil {
+				log.Printf("[ingest] db error: %v", err)
 				writeJSON(
 					w,
 					http.StatusInternalServerError,
@@ -411,6 +464,8 @@ func main() {
 				)
 				return
 			}
+
+			log.Printf("[ingest] done (links) found=%d added=%d", len(codes), added)
 
 			writeJSON(
 				w,
@@ -461,6 +516,8 @@ func auth(
 			[]byte(got),
 			[]byte(key),
 		) != 1 {
+			log.Printf("[auth] rejected %s %s (bad API key)",
+				r.Method, r.URL.Path)
 			writeJSON(
 				w,
 				http.StatusUnauthorized,
@@ -492,4 +549,15 @@ func writeJSON(
 	w.WriteHeader(code)
 
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// ------------------------------------------------------------
+// shorten trims long CDN URLs for readable logs.
+// ------------------------------------------------------------
+
+func shorten(s string) string {
+	if len(s) <= 70 {
+		return s
+	}
+	return s[:70] + "..."
 }

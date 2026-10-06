@@ -179,8 +179,12 @@ func prepareImages(
 ) {
 
 	if publicURL == "" {
+		log.Printf("[prepareImages] PUBLIC_URL is empty — skipping (%d posts)",
+			len(posts))
 		return
 	}
+
+	log.Printf("[prepareImages] start: %d posts, publicURL=%q", len(posts), publicURL)
 
 	var wg sync.WaitGroup
 
@@ -193,6 +197,8 @@ func prepareImages(
 		p := &posts[i]
 
 		if p.ImageURL == "" {
+			log.Printf("[prepareImages]   %s: no imageUrl supplied — skipping",
+				p.Shortcode)
 			continue
 		}
 
@@ -201,11 +207,15 @@ func prepareImages(
 		// Already stored: just point at our copy.
 		if st.HasImage(ctx, p.Shortcode) {
 			p.ImageURL = ourURL
+			log.Printf("[prepareImages]   %s: already stored -> %s",
+				p.Shortcode, ourURL)
 			continue
 		}
 
 		// Over the per-call limit: keep the Instagram link for now.
 		if downloads >= maxDownloadsPerCall {
+			log.Printf("[prepareImages]   %s: hit maxDownloadsPerCall (%d) — deferring",
+				p.Shortcode, maxDownloadsPerCall)
 			continue
 		}
 
@@ -219,16 +229,22 @@ func prepareImages(
 			defer wg.Done()
 			defer func() { <-sem }()
 
+			log.Printf("[prepareImages]   %s: downloading %s",
+				p.Shortcode, shorten(p.ImageURL))
+
 			data, err := fetchImage(ctx, p.ImageURL)
 
 			if err != nil {
 				log.Printf(
-					"image download failed for %s: %v",
+					"[prepareImages]   %s: DOWNLOAD FAILED: %v (keeping Instagram URL)",
 					p.Shortcode,
 					err,
 				)
 				return
 			}
+
+			log.Printf("[prepareImages]   %s: downloaded %d bytes, saving to GridFS",
+				p.Shortcode, len(data))
 
 			if err := st.SaveImage(
 				ctx,
@@ -236,19 +252,22 @@ func prepareImages(
 				data,
 			); err != nil {
 				log.Printf(
-					"image save failed for %s: %v",
+					"[prepareImages]   %s: SAVE FAILED: %v",
 					p.Shortcode,
 					err,
 				)
 				return
 			}
 
+			log.Printf("[prepareImages]   %s: saved -> %s", p.Shortcode, ourURL)
 			p.ImageURL = ourURL
 
 		}(p, ourURL)
 	}
 
 	wg.Wait()
+
+	log.Printf("[prepareImages] done: %d downloads attempted", downloads)
 }
 
 // ------------------------------------------------------------
@@ -278,6 +297,7 @@ func registerImageRoutes(
 			)
 
 			if !shortcodeRe.MatchString(code) {
+				log.Printf("[img] GET %s: bad shortcode", code)
 				http.NotFound(w, r)
 				return
 			}
@@ -285,11 +305,13 @@ func registerImageRoutes(
 			data, err := st.ReadImage(r.Context(), code)
 
 			if errors.Is(err, store.ErrNoImage) {
+				log.Printf("[img] GET %s: 404 (not stored)", code)
 				http.NotFound(w, r)
 				return
 			}
 
 			if err != nil {
+				log.Printf("[img] GET %s: db error: %v", code, err)
 				http.Error(
 					w,
 					"database error",
@@ -297,6 +319,8 @@ func registerImageRoutes(
 				)
 				return
 			}
+
+			log.Printf("[img] GET %s: served %d bytes", code, len(data))
 
 			w.Header().Set(
 				"Content-Type",
@@ -335,6 +359,7 @@ func registerImageRoutes(
 			)
 
 			if !shortcodeRe.MatchString(code) {
+				log.Printf("[img] PUT %s: bad shortcode", code)
 				writeJSON(
 					w,
 					http.StatusBadRequest,
@@ -354,6 +379,8 @@ func registerImageRoutes(
 			data, err := io.ReadAll(r.Body)
 
 			if err != nil || len(data) == 0 {
+				log.Printf("[img] PUT %s: missing or too large body: %v",
+					code, err)
 				writeJSON(
 					w,
 					http.StatusBadRequest,
@@ -368,6 +395,8 @@ func registerImageRoutes(
 				http.DetectContentType(data),
 				"image/",
 			) {
+				log.Printf("[img] PUT %s: body is not an image (%d bytes)",
+					code, len(data))
 				writeJSON(
 					w,
 					http.StatusBadRequest,
@@ -378,11 +407,15 @@ func registerImageRoutes(
 				return
 			}
 
+			log.Printf("[img] PUT %s: received %d bytes from extension",
+				code, len(data))
+
 			if err := st.SaveImage(
 				r.Context(),
 				code,
 				data,
 			); err != nil {
+				log.Printf("[img] PUT %s: SAVE FAILED: %v", code, err)
 				writeJSON(
 					w,
 					http.StatusInternalServerError,
@@ -393,13 +426,21 @@ func registerImageRoutes(
 				return
 			}
 
+			log.Printf("[img] PUT %s: saved to GridFS", code)
+
 			// Point the post at the stored copy.
 			if publicURL != "" {
-				_ = st.SetImageURL(
+				u := imageURLFor(publicURL, code)
+				if err := st.SetImageURL(
 					r.Context(),
 					code,
-					imageURLFor(publicURL, code),
-				)
+					u,
+				); err != nil {
+					log.Printf("[img] PUT %s: SetImageURL failed: %v",
+						code, err)
+				} else {
+					log.Printf("[img] PUT %s: imageUrl set to %s", code, u)
+				}
 			}
 
 			writeJSON(
