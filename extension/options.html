@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>IG Link Sync - Options</title>
+  <style>
+    body { font: 14px system-ui, sans-serif; max-width: 520px; margin: 32px auto; padding: 0 16px; }
+    label { display: block; margin: 14px 0 4px; font-weight: 600; }
+    input { width: 100%; padding: 8px; box-sizing: border-box; }
+    button { margin-top: 18px; padding: 8px 16px; }
+    small { color: #555; }
+    #msg { margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <h2>IG Link Sync</h2>
+  <label for="apiUrl">API URL</label>
+  <input id="apiUrl" placeholder="https://your-api.example.com  (or http://localhost:8080 to test)">
+  <label for="apiKey">API key</label>
+  <input id="apiKey" type="password">
+  <label for="profile">Instagram username</label>
+  <input id="profile" placeholder="username or profile URL">
+  <small>Stay logged in to Instagram in this Chrome for the most reliable results.</small><br>
+  <button id="save">Save</button>
+  <div id="msg"></div>
+  <script src="options.js"></script>
+</body>
+</html>

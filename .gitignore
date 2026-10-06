@@ -1,0 +1,14 @@
+.env
+.env.*
+!.env.example
+
+# Go
+/bin/
+/dist/
+*.exe
+*.test
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/

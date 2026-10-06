@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "IG Link Sync",
+  "version": "1.0.0",
+  "description": "Reads the post links of one Instagram profile in your own Chrome and sends new ones to your API.",
+  "permissions": ["alarms", "storage", "scripting"],
+  "host_permissions": ["https://www.instagram.com/*"],
+  "optional_host_permissions": ["https://*/*", "http://*/*"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_popup": "popup.html", "default_title": "IG Link Sync" },
+  "options_page": "options.html"
+}
